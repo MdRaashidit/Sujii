@@ -1,378 +1,172 @@
 (function execute(inputs, outputs) {
  
-    gs.info("Target SQL Table: " + inputs.target_sql_asmt_questions);
- 
-    var fieldMap = {
-        'category': '[Category]',
-        'instance': '[Instance]',
-        'is_hidden': '[Is_hidden]',
-        'metric': '[Metric]',
-        'metric_definition': '[Metric Definition]',
-        'source_id': '[Source]',
-        'source_table': '[Source_table]',
-        'value': '[Value]',
-        'sys_updated_on': '[Updated]',
-        'sys_updated_by': '[Updated_By]',
-        'sys_created_on': '[Created]',
-        'sys_created_by': '[Created_By]',
-        'metric_type_group': '[Metric_type_group]',
-        'string_value': '[String value]',
-        'sys_mod_count': '[Updates]',
-        'metric.depends_on':'[Metric_Depend_On]',
-        'sys_id':'[Sys ID]'
-    };
- 
-    var fields = Object.keys(fieldMap);
-    var sqlStatements = [];
-    var batchBuffer = [];
-    var batchSize = 500;
-    var counter = 0;
- 
-    // Capture current time
-    var now = new GlideDateTime().getValue();
- 
-    //Get last run time
-    var lastRun = gs.getProperty('sn_grc.Asmt_Last_run_time');
- 
-    var gr = new GlideRecord('asmt_assessment_instance_question');
-    gr.addEncodedQuery('source_table=sn_compliance_control');
- 
-    if (!lastRun) {
-        gs.info("No last run time found. Running BULK load for assessment questions.");
-        gr.query();
-    } else {
-        gs.info("Running INCREMENTAL load since for assmt question " + lastRun);
-        var q = gr.addQuery('sys_created_on', '>', lastRun);
-        q.addOrCondition('sys_updated_on', '>', lastRun);
-        gr.query();
-    }
- 
-    while (gr.next()) {
- 
-        var values = {};
- 
-        for (var i = 0; i < fields.length; i++) {
-            var field = fields[i];
-            var val;
- 
-            // 🔹 Reference / choice fields → display value
-            if ([
-                'category',
-                'metric_definition',
-                'instance',
-                'metric',
-                'source_id',
-                'metric_type_group'
-            ].indexOf(field) !== -1) {
-                val = gr.getDisplayValue(field);
-            }
- 
-            //dot walking handling for metric depend on
-            else if (field == 'metric.depends_on') {
-                var metricGR = gr.metric.getRefRecord();
-                if (metricGR && metricGR.isValidRecord()) {
-                    val = metricGR.getDisplayValue('depends_on');
-                } else {
-                    val = null;
-                }
-            }
-           
- 
-            //  Date fields formatting
-            else if (['sys_created_on', 'sys_updated_on'].indexOf(field) !== -1) {
-                var rawDate = gr.getValue(field);
-                val = rawDate ? rawDate.substring(0, 19).replace('T', ' ') : null;
-            }
- 
-            else {
-                val = gr.getValue(field);
-            }
- 
-            val = val ? val.replace(/'/g, "''") : null;
-            values[field] = val;
-        }
- 
-        var instance = values['instance'];
-        if (!instance) {
-            gs.warn("Skipping record with missing instance: " + gr.sys_id);
-            continue;
-        }
- 
-        var updateSet = fields
-            .filter(f => f !== 'instance')
-            .map(f =>
-                fieldMap[f] + " = " + (values[f] !== null ? "'" + values[f] + "'" : "NULL")
-            ).join(", ");
- 
-        var insertCols = fields.map(f => fieldMap[f]).join(", ");
-        var insertVals = fields.map(f =>
-            values[f] !== null ? "'" + values[f] + "'" : "NULL"
-        ).join(", ");
- 
-        var updateSql =
-            "UPDATE " + inputs.target_sql_asmt_questions + "\n" +
-            "SET " + updateSet + "\n" +
-            "WHERE [Instance] = '" + instance + "'";
- 
-        var insertSql =
-            "INSERT INTO " + inputs.target_sql_asmt_questions + " (" + insertCols + ")\n" +
-            "SELECT " + insertVals + "\n" +
-            "WHERE NOT EXISTS (SELECT 1 FROM " +
-            inputs.target_sql_asmt_questions +
-            " WHERE [Instance] = '" + instance + "')";
- 
-        batchBuffer.push(updateSql);
-        batchBuffer.push(insertSql);
-        counter++;
- 
-        // 🔹 Flush batch
-        if (counter >= batchSize) {
-            sqlStatements.push(batchBuffer.join("\n"));
-            batchBuffer = [];
-            counter = 0;
-        }
-    }
- 
-    // 🔹 Flush remaining
-    if (batchBuffer.length > 0) {
-        sqlStatements.push(batchBuffer.join("\n"));
-    }
- 
-    outputs.bulk_sql_query = sqlStatements.join("\n\n-- End of Batch --\n\n");
- 
-    if (!lastRun) {
-        gs.info("Bulk assessment load completed. Batches: " + sqlStatements.length);
-    } else {
-        gs.info("Incremental assessment load completed since " + lastRun +
-            ". Batches: " + sqlStatements.length);
-    }
- 
-    // 🔹 Update last run time
-    gs.setProperty('sn_grc.Asmt_Last_run_time', now);
- 
-})(inputs, outputs);
-
-
-
-
-----------------cont
-
-(function execute(inputs, outputs) {
- 
 gs.info("Target SQL Table: " + inputs.target_sql_control);
  
-/* ---------------- FIELD MAP ---------------- */
- 
 var fieldMap = {
- 
-    /* existing fields */
-    'number': '[Control Activity Number]',
-    'name': '[Control Activity Name]',
-    'u_process': '[Process]',
-    'description': '[Control Activity Description]',
-    'profile': '[Entity]',
-    'item_function': '[Function]',
-    'state': '[State]',
-    'status': '[Status]',
-    'u_assurance_owner_new': '[Assurance Control Owner]',
-    'content': '[Control Objective]',
-    'u_control_operating_frequency': '[Control Operating Frequency]',
-    'exempt': '[Exempt]',
-    'refers_item.name': '[Reference Risk_Control Name]',
-    'refers_item.number': '[Reference Risk_Control Number]',
- 
-    /* new fields */
-    'active': '[Active]',
-    'u_accounts_financial_statement': '[Accounts Financial Statement]',
-    'u_aesa_emea_distinction': '[AESA/EMEA Distinction]',
-    'u_application_name': '[Application]',
-    'u_assertions_controlled': '[Assertions Controlled]',
-    'attestation': '[Attestation]',
-    'attestation_frequency': '[Attestation frequency]',
-    'assessment_method': '[Attestation method]',
-    'u_audit_entities': '[Audit Entities]',
-    'u_automated_component': '[Automated Component]',
-    'u_automation_candidate_assessment': '[Automation Candidate-Assessment]',
-    'u_business_control_owner_coordinator': '[Business Control Coordinator]',
-    'u_business_control_owner': '[Business Control Owner]',
-    'u_business_process_owner': '[Business Process Owner]',
-    'u_business_it_distinction': '[Business/IT-Distinction]',
-    'category': '[Category]',
-    'classification': '[Classification]',
-    'u_coe': '[COE]',
-    'u_control_type': '[Control Type]',
-    'u_core_it_service': '[Core IT Service]',
-    'u_coso_components': '[COSO Components]',
-    'u_coso_principles': '[COSO Principles]',
-    'u_countries_name': '[Countries]',
-    'sys_created_on': '[Created]',
-    'sys_created_by': '[Created by]',
-    'u_division': '[Division]',
-    'u_entity_process_distinction': '[Entity/Process-Distinction]',
-    'u_governing_group': '[Governing Group]',
-    'u_iag_director': '[IAG Director]',
-    'u_iag_smd': '[IAG SMD]',
-    'frequency': '[IAG Testing Frequency]',
-    'u_information_processing_objective': '[Information Processing Objective]',
-    'u_information_provided_by_itd': '[Information Provided by ITD]',
-    'u_information_provided_by_ksf': '[Information Provided by KSF]',
-    'u_is_a_third_party_involved_in_the_process': '[Is a Third Party involved]',
-    'u_is_this_control_activity_owned_and_executed': '[Is Control Activity Owned]',
-    'u_is_this_third_party_a_service_provider': '[Is Third Party Service Provider]',
-    'u_itd_euc_ksf_krl_control_load': '[ITD/EUC/KSF/KRL Control Load]',
-    'u_itgc_only': '[ITGC Only]',
-    'key_control': '[Key control]',
-    'u_key_control_for_mar': '[Key Control for MAR]',
-    'u_legacy_control_id': '[Legacy Control ID]',
-    'u_legal_entities': '[Legal Entities]',
-    'u_level_of_automation': '[Level of Automation]',
-    'u_management_control_risk_rating': '[Management Control Risk Rating]',
-    'owning_group': '[Owning group]',
-    'u_platform_technologies': '[Platform Technologies]',
-    'u_product_name': '[Product]',
-    'profile_type': '[Entity type]',
-    'u_pwc_reliance': '[PwC Reliance]',
-    'u_pwc_mazars_risk_rating': '[PWC/MAZARS Risk Rating]',
-    'u_rationale_for_interdependencies': '[Rationale for Interdependencies]',
-    'u_region': '[Region]',
-    'respondents': '[Respondents]',
-    'u_segment': '[Segment]',
-    'u_sub_category': '[Sub Category]',
-    'u_sub_segment': '[Sub-Segment]',
-    'sys_id': '[Sys ID]',
-    'u_testing_interdependencies': '[Testing Interdependencies]',
-    'u_third_party_name': '[Third Party Name]',
-    'type': '[Type]',
-    'sys_updated_on': '[Updated]',
-    'sys_updated_by': '[Updated by]'
- 
+'number': '[Control Activity Number]',
+'name': '[Control Activity Name]',
+'u_process': '[Process]',
+'description': '[Control Activity Description]',
+'profile': '[Entity]',
+'item_function': '[Function]',
+'state': '[State]',
+'status': '[Status]',
+'u_assurance_owner_new': '[Assurance Control Owner]',
+'content': '[Control Objective]',
+'u_control_operating_frequency': '[Control Operating Frequency]',
+'exempt': '[Exempt]',
+'refers_item.name': '[Reference Risk_Control Name]',
+'refers_item.number': '[Reference Risk_Control Number]',
 };
  
 var fields = Object.keys(fieldMap);
- 
-var gr = new GlideRecord('sn_compliance_control');
-gr.query();
- 
 var sqlStatements = [];
 var batchBuffer = [];
 var batchSize = 500;
 var counter = 0;
  
+/* Capture current time */
+var now = new GlideDateTime().getValue();
+ 
+/* Get last run */
+var lastRun = gs.getProperty('sn_compliance.Control_last_run_time');
+ 
+var gr = new GlideRecord('sn_compliance_control');
+ 
+if (!lastRun) {
+ 
+gs.info("First run detected → BULK load");
+gr.query();
+ 
+} else {
+ 
+gs.info("Incremental run since: " + lastRun);
+ 
+var q = gr.addQuery('sys_created_on', '>', lastRun);
+q.addOrCondition('sys_updated_on', '>', lastRun);
+ 
+gr.query();
+}
+ 
 while (gr.next()) {
  
-    var values = {};
+var values = {};
  
-    for (var i = 0; i < fields.length; i++) {
+for (var i = 0; i < fields.length; i++) {
  
-        var field = fields[i];
-        var val;
+var field = fields[i];
+var val;
  
-        /* reference / choice fields */
-        if ([
-            'item_function','profile','content','u_process','u_assurance_owner_new',
-            'u_business_control_owner','u_business_process_owner',
-            'u_business_control_owner_coordinator','u_governing_group',
-            'u_iag_director','u_iag_smd','owning_group','respondents'
-        ].indexOf(field) !== -1) {
+if (['item_function','profile','content','u_process','u_assurance_owner_new'].indexOf(field) !== -1) {
  
-            val = gr.getDisplayValue(field);
- 
-        }
- 
-        /* state / status */
-        else if (['state','status','category','classification'].indexOf(field) !== -1) {
- 
-            val = gr.getDisplayValue(field);
- 
-        }
- 
-        /* boolean */
-        else if (field === 'exempt') {
- 
-            val = gr.getValue(field) === 'true' ? 'true' : 'false';
- 
-        }
- 
-        /* dot walking */
-        else if (field === 'refers_item.name' || field === 'refers_item.number') {
- 
-            var refGR = gr.refers_item.getRefRecord();
- 
-            if (refGR.isValidRecord()) {
- 
-                val = field === 'refers_item.name'
-                    ? refGR.getValue('name')
-                    : refGR.getValue('number');
- 
-            } else {
- 
-                val = null;
- 
-            }
- 
-        }
- 
-        else {
- 
-            val = gr.getValue(field);
- 
-        }
- 
-        val = val ? val.replace(/'/g,"''") : null;
- 
-        values[field] = val;
- 
-    }
- 
-    var number = values['number'];
- 
-    var updateSet = fields.filter(function(f){
-        return f !== 'number';
-    }).map(function(f){
-        return fieldMap[f] + " = " + (values[f] !== null ? "'" + values[f] + "'" : "NULL");
-    }).join(", ");
- 
-    var insertCols = fields.map(function(f){ return fieldMap[f]; }).join(", ");
- 
-    var insertVals = fields.map(function(f){
-        return values[f] !== null ? "'" + values[f] + "'" : "NULL";
-    }).join(", ");
- 
-    var updateSql =
-    "UPDATE " + inputs.target_sql_control + "\n" +
-    "SET " + updateSet + "\n" +
-    "WHERE [Control Activity Number] = '" + number + "'";
- 
-    var insertSql =
-    "INSERT INTO " + inputs.target_sql_control + " (" + insertCols + ")\n" +
-    "SELECT " + insertVals + "\n" +
-    "WHERE NOT EXISTS (SELECT 1 FROM " +
-    inputs.target_sql_control +
-    " WHERE [Control Activity Number] = '" + number + "')";
- 
-    batchBuffer.push(updateSql);
-    batchBuffer.push(insertSql);
- 
-    counter++;
- 
-    if (counter >= batchSize) {
- 
-        sqlStatements.push(batchBuffer.join("\n"));
-        batchBuffer = [];
-        counter = 0;
- 
-    }
+val = gr.getDisplayValue(field);
  
 }
+ 
+else if (['state','status'].indexOf(field) !== -1) {
+ 
+val = gr.getDisplayValue(field);
+ 
+}
+ 
+else if (field === 'exempt') {
+ 
+val = gr.getValue(field) === 'true' ? 'true' : 'false';
+ 
+}
+ 
+else if (field === 'refers_item.name' || field === 'refers_item.number') {
+ 
+var refGR = gr.refers_item.getRefRecord();
+ 
+if (refGR && refGR.isValidRecord()) {
+ 
+val = field === 'refers_item.name'
+? refGR.getValue('name')
+: refGR.getValue('number');
+ 
+} else {
+ 
+val = null;
+ 
+}
+ 
+}
+ 
+else {
+ 
+val = gr.getValue(field);
+ 
+}
+ 
+val = val ? val.replace(/'/g,"''") : null;
+values[field] = val;
+ 
+}
+ 
+var number = values['number'];
+ 
+if (!number) {
+gs.warn("Skipping record with missing number: " + gr.sys_id);
+continue;
+}
+ 
+var updateSet = fields.filter(function(f){
+return f !== 'number';
+}).map(function(f){
+return fieldMap[f] + " = " + (values[f] !== null ? "'" + values[f] + "'" : "NULL");
+}).join(", ");
+ 
+var insertCols = fields.map(function(f){ return fieldMap[f]; }).join(", ");
+ 
+var insertVals = fields.map(function(f){
+return values[f] !== null ? "'" + values[f] + "'" : "NULL";
+}).join(", ");
+ 
+var updateSql =
+"UPDATE " + inputs.target_sql_control + "\n" +
+"SET " + updateSet + "\n" +
+"WHERE [Control Activity Number] = '" + number + "'";
+ 
+var insertSql =
+"INSERT INTO " + inputs.target_sql_control + " (" + insertCols + ")\n" +
+"SELECT " + insertVals + "\n" +
+"WHERE NOT EXISTS (SELECT 1 FROM " +
+inputs.target_sql_control +
+" WHERE [Control Activity Number] = '" + number + "')";
+ 
+batchBuffer.push(updateSql);
+batchBuffer.push(insertSql);
+counter++;
+ 
+/* Flush batch */
+ 
+if (counter >= batchSize) {
+ 
+sqlStatements.push(batchBuffer.join("\n"));
+batchBuffer = [];
+counter = 0;
+ 
+}
+ 
+}
+ 
+/* Flush remaining */
  
 if (batchBuffer.length > 0) {
  
-    sqlStatements.push(batchBuffer.join("\n"));
+sqlStatements.push(batchBuffer.join("\n"));
  
 }
  
-outputs.bulk_sql_query = sqlStatements.join("\n\n-- End of Record --\n\n");
+/* Send SQL to JDBC */
+ 
+outputs.bulk_sql_query = sqlStatements.join("\n\n-- End of Batch --\n\n");
  
 gs.info("Generated bulk SQL in " + sqlStatements.length + " batches.");
+ 
+/* Update last run property */
+ 
+gs.setProperty('sn_compliance.Control_last_run_time', now);
  
 })(inputs, outputs);
