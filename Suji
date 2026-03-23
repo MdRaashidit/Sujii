@@ -2,9 +2,6 @@
 
 gs.info("Target SQL Table: " + inputs.target_sql_control);
 
-/* ════════════════════════════════
-   FIELD MAP
-   ════════════════════════════════ */
 var fieldMap = {
     'number':                          '[Control Activity Number]',
     'name':                            '[Control Activity Name]',
@@ -84,9 +81,6 @@ var fieldMap = {
     'type':                            '[Type]'
 };
 
-/* ════════════════════════════════
-   DISPLAY VALUE FIELDS
-   ════════════════════════════════ */
 var displayValueFields = [
     'item_function', 'profile', 'content', 'u_process',
     'u_assurance_owner_new', 'u_accounts_financial_statement',
@@ -124,8 +118,34 @@ var displayValueFields = [
 ];
 
 /* ════════════════════════════════
-   CURRENT RECORD — Flow trigger se
-   automatically milta hai
+   RECORD FETCH
+   current = real trigger
+   fallback = latest record for test
+   ════════════════════════════════ */
+var gr;
+
+if (current && current.sys_id) {
+    // ✅ Real trigger — current use karo
+    gr = current;
+    gs.info("Using current record: " + current.sys_id);
+} else {
+    // ✅ Test run — latest record fetch karo
+    gr = new GlideRecord('sn_compliance_control');
+    gr.orderByDesc('sys_updated_on');
+    gr.setLimit(1);
+    gr.query();
+    gr.next();
+    gs.info("Test mode — using latest record: " + gr.sys_id);
+}
+
+if (!gr || !gr.isValidRecord()) {
+    gs.error("No valid record found!");
+    outputs.bulk_sql_query = "";
+    return;
+}
+
+/* ════════════════════════════════
+   EXTRACT VALUES
    ════════════════════════════════ */
 var fields = Object.keys(fieldMap);
 var values = {};
@@ -136,11 +156,11 @@ for (var i = 0; i < fields.length; i++) {
     var val;
 
     if (field === 'exempt') {
-        val = current.getValue(field) === 'true' ? 'true' : 'false';
+        val = gr.getValue(field) === 'true' ? 'true' : 'false';
 
     } else if (field === 'refers_item.name' ||
                field === 'refers_item.number') {
-        var refGR = current.refers_item.getRefRecord();
+        var refGR = gr.refers_item.getRefRecord();
         if (refGR && refGR.isValidRecord()) {
             val = field === 'refers_item.name'
                 ? refGR.getValue('name')
@@ -150,13 +170,12 @@ for (var i = 0; i < fields.length; i++) {
         }
 
     } else if (displayValueFields.indexOf(field) !== -1) {
-        val = current.getDisplayValue(field);
+        val = gr.getDisplayValue(field);
 
     } else {
-        val = current.getValue(field);
+        val = gr.getValue(field);
     }
 
-    /* Sanitize */
     val = (val !== null && val !== undefined && val !== '')
         ? val.toString().replace(/'/g, "''")
         : null;
@@ -170,7 +189,7 @@ for (var i = 0; i < fields.length; i++) {
 var number = values['number'];
 
 if (!number) {
-    gs.warn("Skipping — missing number: " + current.sys_id);
+    gs.warn("Skipping — missing number: " + gr.sys_id);
     outputs.bulk_sql_query = "";
     return;
 }
@@ -200,7 +219,7 @@ var insertVals = fields
     }).join(", ");
 
 /* ════════════════════════════════
-   FINAL SQL
+   FINAL SQL OUTPUT
    ════════════════════════════════ */
 var updateSql =
     "UPDATE " + inputs.target_sql_control +
@@ -216,43 +235,8 @@ var insertSql =
         " WHERE [Control Activity Number] = '" + number + "'" +
     ");";
 
-/* ════════════════════════════════
-   OUTPUT — Sirf 1 record ka SQL
-   Size limit kabhi hit nahi hoga!
-   ════════════════════════════════ */
 outputs.bulk_sql_query = updateSql + "\n" + insertSql;
 
-gs.info("✅ Record processed: " + number);
+gs.info("Record processed: " + number);
 
 })(inputs, outputs);
-```
-
----
-
-## Flow mein kuch nahi karna — Zero Changes! ✅
-
-| Kya | Status |
-|-----|--------|
-| Flow Trigger | Same ✅ |
-| ControlsJDBC Action | Same ✅ |
-| target_sql_control input | Same ✅ |
-| Koi naya variable | Nahi chahiye ✅ |
-| Script step | Sirf ye code paste karo ✅ |
-
----
-
-## Kyun kaam karega
-```
-Record update/create hua
-       ↓
-Flow trigger hua
-       ↓
-Script step chala
-       ↓
-"current" = wo hi record automatically
-       ↓
-Sirf us 1 record ka SQL bana
-       ↓
-JDBC step ne execute kiya
-       ↓
-✅ Done — No size limit issue!
